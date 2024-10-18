@@ -11,6 +11,7 @@ import torch.backends.cudnn as cudnn
 import numpy as np
 from transformers import BertTokenizer, BertModel
 from sigma.rule import SigmaRule, SigmaDetections
+import requests
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
@@ -89,9 +90,13 @@ def receive_command():
             '''Noise decay & Record & Log'''
 
             '''save model'''
+            my_data = {'sid': data['sid'], "action": a_next}
+            r1 = requests.post(f"{app.config['engage_ad']}/post", data = my_data)
+            r2 = requests.post(f"{app.config['engage_network']}/post", data = my_data)
+
             
             print(f"message: PS command received successfully!, command:{command}")
-            return jsonify({"message": "PS command received successfully!", "command": command}), 200
+            return jsonify({"message": "PS command received successfully!", "command": command, "result": a_next }), 200
         else:
             dw = 1
             s_next = getVectorByCommand("exit")
@@ -101,6 +106,11 @@ def receive_command():
             return jsonify({"message": "exit successfully!"}), 200
 
 if __name__ == '__main__':
+
+    with open('config.json', 'r') as config_file:
+        config = json.load(config_file)
+    app.config.update(config)
+
     parser = argparse.ArgumentParser(description="Training")
     parser.add_argument('--dvc', type=str, default='cuda:0', help='running device: cuda or cpu')
     parser.add_argument('--EnvIdex', type=int, default=0, help='CP-v1, LLd-v2')
