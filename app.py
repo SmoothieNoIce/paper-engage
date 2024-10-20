@@ -34,7 +34,7 @@ def getReward(command):
     return 1
 
 def get_bert_embedding(command):
-    inputs = tokenizer(command, return_tensors="pt")
+    inputs = tokenizer(command, return_tensors="pt", truncation=True, padding=True, max_length=512)
     outputs = model(**inputs)
     return outputs.last_hidden_state.mean(dim=1)  # 平均所有的詞嵌入
 
@@ -91,12 +91,12 @@ def receive_command():
 
             '''save model'''
             my_data = {'sid': data['sid'], "action": a_next}
-            r1 = requests.post(f"{app.config['engage_ad']}/post", data = my_data)
-            r2 = requests.post(f"{app.config['engage_network']}/post", data = my_data)
+            #r1 = requests.post(f"{app.config['engage_ad']}/post", data = my_data)
+            #r2 = requests.post(f"{app.config['engage_network']}/post", data = my_data)
 
             
-            print(f"message: PS command received successfully!, command:{command}")
-            return jsonify({"message": "PS command received successfully!", "command": command, "result": a_next }), 200
+            print(f"message: PS command received successfully!, command:{command}, result: {a_next}")
+            return jsonify({"message": "PS command received successfully!", "command": command, "result": 1 }), 200
         else:
             dw = 1
             s_next = getVectorByCommand("exit")
@@ -145,7 +145,7 @@ if __name__ == '__main__':
 
     cudnn.benchmark = True
 
-    app.run(host='0.0.0.0', port=8080)
+    app.run(host='0.0.0.0', port=9200)
 
     """ if args.resume:
         testnetDQN = torch.load(args.netDQN)
