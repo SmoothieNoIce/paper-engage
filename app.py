@@ -35,17 +35,6 @@ tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 model = BertModel.from_pretrained('bert-base-uncased')
 
 agent: DQN_agent = None
-total_steps = 0
-
-def get_technique_as_int(technique_code):
-    if technique_code in label_encoder.classes_:
-        return label_encoder.transform([technique_code])[0]
-    else:
-        return -1  # 技術不在已知範圍內時返回 -1
-
-def getVectorByCommand(command):
-    bert_embedding = get_bert_embedding(command)
-    return bert_embedding
 
 def getTechniqueByCommand(command):
     
@@ -91,40 +80,52 @@ def getTechniqueByCommand(command):
         print("JSON decoding failed:", e)
         return None
 
-def getReward(command):
-    # 如果攻擊者的指令為惡意指令，reward = 1
-    return 1
-
 def get_bert_embedding(command):
     inputs = tokenizer(command, return_tensors="pt", truncation=True, padding=True, max_length=512)
     outputs = model(**inputs)
-    return outputs.last_hidden_state.mean(dim=1)  # 平均所有的詞嵌入
+    return outputs.last_hidden_state.mean(dim=1)  # 平均所有的 command embedding
+
+def get_technique_as_int(technique_code):
+    if technique_code in label_encoder.classes_:
+        return label_encoder.transform([technique_code])[0]
+    else:
+        return -1  # 不在已知範圍內時返回 -1
+
+def getVectorByCommand(command):
+    bert_embedding = get_bert_embedding(command)
+    return bert_embedding
 
 
-isFirstCommand = True # 是否為第一個指令
-s_before = []
-a_before = []
-command_before = ""
-technique_int_before = -1
-ttp_before = None
+class ad_env:
+    def __init__(self):
+        self.isFirstCommand = True # 是否為第一個指令
+        self.s_before = []
+        self.a_before = []
 
-id_list = [] # 用於存儲每個指令的 ID(時間戳)
+        self.command_before = ""
+        self.technique_int_before = -1
+        self.ttp_before = None
+        self.total_steps = 0
+        self.reward = 0
+        self.total_steps = 0
+
+        self.id_list = [] # 用於存儲每個指令的 ID(時間戳)
+        pass
+
+    def get_action(self, state):
+        pass
+    
+    def getReward(ttp_before, a_before):
+        return 1
+
+adenv: ad_env = None
 
 # step for powershell command
 @app.route('/api/ps', methods=['POST'])
 def next_step():
+    global adenv
     global writer
     global agent
-    global total_steps
-
-    global s_before
-    global a_before
-
-    global technique_int_before
-    global ttp_before
-
-    global isFirstCommand
-    global id_list
 
     if request.is_json:
         data = request.get_json()
@@ -132,6 +133,9 @@ def next_step():
             '''讀取 command'''
             command = data['command']
             id = data['id']
+
+            '''儲存序列'''
+            adenv.id_list.append(id)
 
             '''分析目前 command 的 TTP，並儲存作為計算 Reward'''
             commandvec = getVectorByCommand(command)
@@ -141,67 +145,60 @@ def next_step():
                 technique_int = get_technique_as_int('TNotFound')
             else:
                 technique_int = get_technique_as_int(ttp['techniques'][0]['technique_id'])
-            technique_int_before = technique_int
-            ttp_before = ttp
-
-            '''分析上一個指令 reward'''
-            '''Todo: 比較上一個指令 technique 和上一個 action 的 activity 是否有重疊，'''
-            '''Reward: 1: 有重疊，-99: 沒有重疊'''
-            r_before = getReward(ttp_before, a_before)
-
+            adenv.technique_int_before = technique_int
+            adenv.ttp_before = ttp
 
             '''分析上個指令是否離開 Shell (die or win)'''
             '''TOdo: 改為分析上個指令是否離開 RDP (die or win)'''
             dw = 0 # 因為還沒離開 shell，所以為 win
-            id_list.append(id)
 
-
-            '''DQN'''
+            '''DQN，計算 action'''
             s_next: torch.Tensor = commandvec
             #technique_int = torch.tensor([[technique_int]])
             #s_next = torch.cat((technique_int, commandvec), dim=1)
-            if isFirstCommand:
+            if adenv.isFirstCommand:
                 '''對當前的指令選擇 action'''
                 a_next = agent.select_action(s_next, deterministic=False)
-                isFirstCommand = False
+                adenv.isFirstCommand = False
             else:
+                '''分析上一個指令 reward'''
+                '''Todo: 比較上一個指令 technique 和上一個 action 的 activity 對應到的 technique 是否有重疊，'''
+                '''還有目前環境的狀態，計算 reward'''
+                #r_before = adenv.getReward(adenv.ttp_before, adenv.a_before)
+                
                 '''計算上一個指令的 reward，然後進行學習'''
-                agent.replay_buffer.add(s_before.detach().numpy(), a_before, r_before, s_next.detach().numpy(), dw)
+                agent.replay_buffer.add(ad_env.s_before.detach().numpy(), ad_env.a_before, r_before, s_next.detach().numpy(), dw)
                 '''對當前的指令選擇 action'''
                 a_next = agent.select_action(s_next, deterministic=False)
 
             '''Update AD Env，Next Step'''
             '''Rest API'''
-            my_data = {'sid': data['sid'], "action": a_next}
-            #r1 = requests.post(f"{app.config['engage_ad']}/post", data = my_data)
+            my_data = {'sid': 'S-1-5-21-330257909-3333167167-1293758517-1603', "action": 1}
+            r1 = requests.get(f"{app.config['engage_ad']}", data = my_data)
             #r2 = requests.post(f"{app.config['engage_network']}/post", data = my_data)
-            #1. Command Pass / 
-            #1. Command Pass / 
-
-            #14. Command Reject / 
 
             '''儲存 State 作為計算 reward'''
-            s_before = s_next
-            a_before = a_next
+            ad_env.s_before = s_next
+            ad_env.a_before = a_next
 
-            '''Update'''
-            if total_steps >= opt.random_steps and total_steps % opt.update_every == 0:
+            '''Update Q Network'''
+            if adenv.total_steps >= opt.random_steps and adenv.total_steps % opt.update_every == 0:
                 for j in range(opt.update_every): agent.train()
 
             '''Noise decay & Record & Log'''
-            if total_steps % 1000 == 0: 
+            if adenv.total_steps % 1000 == 0: 
                 agent.exp_noise *= opt.noise_decay
-                if total_steps % opt.eval_interval == 0:
+                if adenv.total_steps % opt.eval_interval == 0:
                     if opt.write:
-                        writer.add_scalar('noise', agent.exp_noise, global_step=total_steps)
-                    print('seed:',opt.seed,'steps: {}k'.format(int(total_steps/1000)))
-                total_steps += 1
+                        writer.add_scalar('noise', agent.exp_noise, global_step=adenv.total_steps)
+                    print('steps: {}'.format(int(adenv.total_steps)))
+                adenv.total_steps += 1
 
             '''save model'''
-            if total_steps % opt.save_interval == 0:
-                agent.save("DDQN",int(total_steps/1000))
+            if adenv.total_steps % opt.save_interval == 0:
+                agent.save("DDQN",int(adenv.total_steps/1000))
             
-            '''HTTP Response'''
+            '''Print Log'''
             try:
                 # 檢查 command 並轉換非 ASCII 字符
                 safe_command = command.encode('ascii', errors='replace').decode('ascii')
@@ -210,12 +207,14 @@ def next_step():
                     print(f"message: technique: {technique['technique_id']} - {technique['name']}")
             except Exception as e:
                 print(f"Error occurred while printing: {e}")
+
+            '''HTTP Response'''
             return jsonify({"message": "PS command received successfully!", "command": command, "result": 1 }), 200
         else:
             dw = 1
             s_next = getVectorByCommand("exit")
-            r_before = getReward("exit")
-            agent.replay_buffer.add(s_before.detach().numpy(), a_before, r_before, s_next.detach().numpy(), dw)
+            r_before = adenv.getReward(adenv.ttp_before, adenv.a_before)
+            agent.replay_buffer.add(adenv.s_before.detach().numpy(), adenv.a_before, r_before, s_next.detach().numpy(), dw)
             print(f"message: exit!")
             return jsonify({"message": "exit successfully!"}), 200
 
@@ -235,6 +234,7 @@ if __name__ == '__main__':
     parser.add_argument('--render', type=str2bool, default=False, help='Render or Not')
     parser.add_argument('--Loadmodel', type=str2bool, default=False, help='Load pretrained model or Not')
     parser.add_argument('--ModelIdex', type=int, default=100, help='which model to load')
+    parser.add_argument('--IsTrain', type=str2bool, default=True, help='Is Train or Not')
 
     parser.add_argument('--seed', type=int, default=0, help='random seed')
     parser.add_argument('--Max_train_steps', type=int, default=int(1e6), help='Max training steps')
@@ -264,6 +264,7 @@ if __name__ == '__main__':
     if opt.Double: algo_name += 'DDQN'
     else: algo_name += 'DQN'
 
+    adenv: ad_env = ad_env()
     agent = DQN_agent(**vars(opt))
 
     ## Log 設定
@@ -276,7 +277,7 @@ if __name__ == '__main__':
         writer = SummaryWriter(log_dir=writepath)
 
     ## 整理 MITRE ATT&CK 
-    mitre_attack_data = MitreAttackData("./dataset/enterprise-attack.json")
+    mitre_attack_data = MitreAttackData("./json/enterprise-attack.json")
     techniques = mitre_attack_data.get_techniques(remove_revoked_deprecated=True)
     techniques_id = []
     all_techniques = {}
@@ -288,7 +289,6 @@ if __name__ == '__main__':
     all_techniques['TNotFound'] = 'TNotFound'
     label_encoder = LabelEncoder()
     label_encoder.fit(techniques_id)
-
 
     cudnn.benchmark = True
 
