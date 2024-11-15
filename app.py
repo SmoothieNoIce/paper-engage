@@ -61,8 +61,7 @@ def getTechniqueByCommand(command):
 
     {command}
     """
-
-    response = client.chat.completions.create(model="gpt-4o",  # 使用最新的模型
+    response = client.chat.completions.create(model="gpt-4o-mini",  # 使用最新的模型
     response_format={ "type": "json_object" },
     messages=[
         {"role": "system", "content": "You are an expert in cybersecurity and MITRE ATT&CK."},
@@ -101,6 +100,7 @@ class ad_env:
         self.isFirstCommand = True # 是否為第一個指令
         self.s_before = []
         self.a_before = []
+        self.is_cleaning = False
 
         self.command_before = ""
         self.technique_int_before = -1
@@ -115,7 +115,7 @@ class ad_env:
     def get_action(self, state):
         pass
     
-    def getReward(ttp_before, a_before):
+    def getReward(self, ttp_before, a_before):
         return 1
 
 adenv: ad_env = None
@@ -126,6 +126,11 @@ def next_step():
     global adenv
     global writer
     global agent
+
+    if adenv.is_cleaning:
+        print(f"Papar-Attack is cleaning")
+        command = data['command']
+        return jsonify({"message": "Papar-Attack is cleaning", "command": command, "result": 1 }), 200
 
     if request.is_json:
         data = request.get_json()
@@ -141,7 +146,7 @@ def next_step():
             commandvec = getVectorByCommand(command)
             ttp = getTechniqueByCommand(command)
             technique_int = None
-            if len(ttp['techniques']) == 0:
+            if ttp == None or len(ttp['techniques']) == 0:
                 technique_int = get_technique_as_int('TNotFound')
             else:
                 technique_int = get_technique_as_int(ttp['techniques'][0]['technique_id'])
@@ -164,7 +169,7 @@ def next_step():
                 '''分析上一個指令 reward'''
                 '''Todo: 比較上一個指令 technique 和上一個 action 的 activity 對應到的 technique 是否有重疊，'''
                 '''還有目前環境的狀態，計算 reward'''
-                #r_before = adenv.getReward(adenv.ttp_before, adenv.a_before)
+                r_before = adenv.getReward(adenv.ttp_before, adenv.a_before)
                 
                 '''計算上一個指令的 reward，然後進行學習'''
                 agent.replay_buffer.add(ad_env.s_before.detach().numpy(), ad_env.a_before, r_before, s_next.detach().numpy(), dw)
@@ -173,8 +178,8 @@ def next_step():
 
             '''Update AD Env，Next Step'''
             '''Rest API'''
-            my_data = {'sid': 'S-1-5-21-330257909-3333167167-1293758517-1603', "action": 1}
-            r1 = requests.get(f"{app.config['engage_ad']}", data = my_data)
+            my_data = {'sid': data['sid'], "action": 1}
+            #r1 = requests.get(f"{app.config['engage_ad']}", data = my_data)
             #r2 = requests.post(f"{app.config['engage_network']}/post", data = my_data)
 
             '''儲存 State 作為計算 reward'''
@@ -214,9 +219,24 @@ def next_step():
             dw = 1
             s_next = getVectorByCommand("exit")
             r_before = adenv.getReward(adenv.ttp_before, adenv.a_before)
-            agent.replay_buffer.add(adenv.s_before.detach().numpy(), adenv.a_before, r_before, s_next.detach().numpy(), dw)
+            if len(adenv.s_before) != 0:
+                agent.replay_buffer.add(adenv.s_before.detach().numpy(), adenv.a_before, r_before, s_next.detach().numpy(), dw)
             print(f"message: exit!")
             return jsonify({"message": "exit successfully!"}), 200
+
+# Paper-Attack 環境清理
+@app.route('/api/clean', methods=['POST'])
+def clean():
+    global adenv
+    adenv.is_cleaning = True
+    return jsonify({"message": "OK!" }), 200
+
+# Paper-Attack 攻擊中
+@app.route('/api/attack', methods=['POST'])
+def attack():
+    global adenv
+    adenv.is_cleaning = False
+    return jsonify({"message": "OK!" }), 200
 
 if __name__ == '__main__':
 
@@ -266,6 +286,7 @@ if __name__ == '__main__':
 
     adenv: ad_env = ad_env()
     agent = DQN_agent(**vars(opt))
+    adenv.is_cleaning = False
 
     ## Log 設定
     if opt.write:
