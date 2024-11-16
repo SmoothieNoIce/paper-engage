@@ -6,20 +6,22 @@ import re
 import requests
 import argparse
 
-import torch
-import torch.backends.cudnn as cudnn
 from openai import OpenAI
 from mitreattack.stix20 import MitreAttackData
 from flask import Flask, request, jsonify
+from sigma.rule import SigmaRule, SigmaDetections
+
+import numpy as np
+import torch
+import torch.backends.cudnn as cudnn
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import LabelEncoder
-from transformers import BertTokenizer, BertModel
-from sigma.rule import SigmaRule, SigmaDetections
 from sklearn.preprocessing import LabelEncoder
-import numpy as np
+from transformers import BertTokenizer, BertModel
 
-from DDQN import Duel_Q_Net, DQN_agent
+from DDQN import DQN_agent
 from utils import evaluate_policy, str2bool
+from affect import predefined_actions
 
 all_techniques = {}
 label_encoder = None  
@@ -36,7 +38,7 @@ model = BertModel.from_pretrained('bert-base-uncased')
 
 agent: DQN_agent = None
 
-def getTechniqueByCommand(command):
+def get_ttp_by_command(command):
     
     json_template = '''
     {
@@ -90,16 +92,40 @@ def get_technique_as_int(technique_code):
     else:
         return -1  # 不在已知範圍內時返回 -1
 
-def getVectorByCommand(command):
+def get_vector_by_command(command):
     bert_embedding = get_bert_embedding(command)
     return bert_embedding
 
+def detect_powershell_content(content):
+    # 檢查內容是否包含 PowerShell script 的關鍵字
+    if "PowerShell" in content or "Get-" in content:
+        return True
+    else:
+        return False
+
+def preprocess_command(id, sid, command):
+    is_script = detect_powershell_content(command)
+    commandvec = get_vector_by_command(command)
+    ttp = get_ttp_by_command(command)
+    ttp_label_int = None
+    
+    if ttp == None or len(ttp['techniques']) == 0:
+        ttp_label_int = get_technique_as_int('TNotFound')
+    else:
+        ttp_label_int = get_technique_as_int(ttp['techniques'][0]['technique_id'])
+
+    return {
+        'is_script': is_script,
+        'commandvec': commandvec,
+        'ttp_label_int': ttp_label_int
+    }
 
 class ad_env:
     def __init__(self):
         self.isFirstCommand = True # 是否為第一個指令
         self.s_before = []
         self.a_before = []
+        self.all_technique = []
         self.is_cleaning = False
 
         self.command_before = ""
@@ -116,7 +142,24 @@ class ad_env:
         pass
     
     def getReward(self, ttp_before, a_before):
-        return 1
+        current_reward = 
+
+        for action in predefined_actions:
+            if action['id'] == a_before:
+                if ttp_before['techniques'][0]['technique_id'] in action['activities']:
+                    current_reward += 10
+                else:
+                    current_reward -= 10
+
+        for ttp in ttp_before['techniques']:
+            if ttp['technique_id'] in self.all_technique:
+                current_reward -= 5
+            else:
+                current_reward += 5
+
+            self.all_technique.append(ttp['technique_id'])
+            
+        return current_reward
 
 adenv: ad_env = None
 
@@ -127,40 +170,33 @@ def next_step():
     global writer
     global agent
 
-    if adenv.is_cleaning:
-        print(f"Papar-Attack is cleaning")
-        command = data['command']
-        return jsonify({"message": "Papar-Attack is cleaning", "command": command, "result": 1 }), 200
-
     if request.is_json:
         data = request.get_json()
+
+        if adenv.is_cleaning:
+            '''清理環境'''
+            print(f"Papar-Attack is cleaning")
+            command = data['command']
+            return jsonify({"message": "Papar-Attack is cleaning", "command": command, "result": 99 }), 200
+
         if data['status'] == 'success':
             '''讀取 command'''
-            command = data['command']
-            id = data['id']
+            command = data['command'] # 指令內容
+            id = data['id']           # 指令 ID
+            sid = data['sid']         # 使用者 ID
 
             '''儲存序列'''
             adenv.id_list.append(id)
 
             '''分析目前 command 的 TTP，並儲存作為計算 Reward'''
-            commandvec = getVectorByCommand(command)
-            ttp = getTechniqueByCommand(command)
-            technique_int = None
-            if ttp == None or len(ttp['techniques']) == 0:
-                technique_int = get_technique_as_int('TNotFound')
-            else:
-                technique_int = get_technique_as_int(ttp['techniques'][0]['technique_id'])
-            adenv.technique_int_before = technique_int
-            adenv.ttp_before = ttp
+            command_data = preprocess_command(id, sid, command)
 
             '''分析上個指令是否離開 Shell (die or win)'''
             '''TOdo: 改為分析上個指令是否離開 RDP (die or win)'''
             dw = 0 # 因為還沒離開 shell，所以為 win
 
             '''DQN，計算 action'''
-            s_next: torch.Tensor = commandvec
-            #technique_int = torch.tensor([[technique_int]])
-            #s_next = torch.cat((technique_int, commandvec), dim=1)
+            s_next: torch.Tensor = command_data['commandvec']
             if adenv.isFirstCommand:
                 '''對當前的指令選擇 action'''
                 a_next = agent.select_action(s_next, deterministic=False)
@@ -177,6 +213,9 @@ def next_step():
                 a_next = agent.select_action(s_next, deterministic=False)
 
             '''Update AD Env，Next Step'''
+            adenv.technique_int_before = command_data['ttp_label_int']
+            adenv.ttp_before = command_data['ttp']
+
             '''Rest API'''
             my_data = {'sid': data['sid'], "action": 1}
             #r1 = requests.get(f"{app.config['engage_ad']}", data = my_data)
@@ -187,28 +226,28 @@ def next_step():
             ad_env.a_before = a_next
 
             '''Update Q Network'''
-            if adenv.total_steps >= opt.random_steps and adenv.total_steps % opt.update_every == 0:
-                for j in range(opt.update_every): agent.train()
+            if adenv.total_steps != 0 and adenv.total_steps % opt.update_every == 0:
+                loss = agent.train()
+                print('loss: {}'.format(loss))
+                if opt.write:
+                    writer.add_scalar('loss', loss, global_step=adenv.total_steps)
 
-            '''Noise decay & Record & Log'''
-            if adenv.total_steps % 1000 == 0: 
-                agent.exp_noise *= opt.noise_decay
-                if adenv.total_steps % opt.eval_interval == 0:
-                    if opt.write:
-                        writer.add_scalar('noise', agent.exp_noise, global_step=adenv.total_steps)
-                    print('steps: {}'.format(int(adenv.total_steps)))
-                adenv.total_steps += 1
-
+            '''Record & Log'''
+            if adenv.total_steps % 50 == 0: 
+                print('steps: {}'.format(int(adenv.total_steps)))
+            
             '''save model'''
             if adenv.total_steps % opt.save_interval == 0:
-                agent.save("DDQN",int(adenv.total_steps/1000))
+                agent.save("DDQN",int(adenv.total_steps/10), adenv.total_steps)
+
+            adenv.total_steps += 1
             
             '''Print Log'''
             try:
                 # 檢查 command 並轉換非 ASCII 字符
                 safe_command = command.encode('ascii', errors='replace').decode('ascii')
                 print(f"message: PS command received successfully!, command:{safe_command}, result: {a_next}")
-                for technique in ttp['techniques']:
+                for technique in command_data['ttp']['techniques']:
                     print(f"message: technique: {technique['technique_id']} - {technique['name']}")
             except Exception as e:
                 print(f"Error occurred while printing: {e}")
@@ -217,7 +256,7 @@ def next_step():
             return jsonify({"message": "PS command received successfully!", "command": command, "result": 1 }), 200
         else:
             dw = 1
-            s_next = getVectorByCommand("exit")
+            s_next = get_vector_by_command("exit")
             r_before = adenv.getReward(adenv.ttp_before, adenv.a_before)
             if len(adenv.s_before) != 0:
                 agent.replay_buffer.add(adenv.s_before.detach().numpy(), adenv.a_before, r_before, s_next.detach().numpy(), dw)
@@ -240,6 +279,9 @@ def attack():
 
 if __name__ == '__main__':
 
+    print("======!!!Paper Engage by:Flexolk!!!=====")
+
+    print("======Reading Config=====")
     ## config
     with open('config.json', 'r') as config_file:
         config = json.load(config_file)
@@ -248,27 +290,19 @@ if __name__ == '__main__':
     # OpenAI API
     client = OpenAI(api_key=app.config['openai_api_key'])
 
+    print("======Reading Argument=====")
     parser = argparse.ArgumentParser(description="Training")
     parser.add_argument('--dvc', type=str, default='cuda:0', help='running device: cuda or cpu')
     parser.add_argument('--write', type=str2bool, default=True, help='Use SummaryWriter to record the training')
-    parser.add_argument('--render', type=str2bool, default=False, help='Render or Not')
-    parser.add_argument('--Loadmodel', type=str2bool, default=False, help='Load pretrained model or Not')
-    parser.add_argument('--ModelIdex', type=int, default=100, help='which model to load')
     parser.add_argument('--IsTrain', type=str2bool, default=True, help='Is Train or Not')
 
-    parser.add_argument('--seed', type=int, default=0, help='random seed')
-    parser.add_argument('--Max_train_steps', type=int, default=int(1e6), help='Max training steps')
     parser.add_argument('--save_interval', type=int, default=int(50), help='Model saving interval, in steps.')
-    parser.add_argument('--eval_interval', type=int, default=int(2e3), help='Model evaluating interval, in steps.')
-    parser.add_argument('--random_steps', type=int, default=int(3e3), help='steps for random policy to explore')
-    parser.add_argument('--update_every', type=int, default=50, help='training frequency')
+    parser.add_argument('--update_every', type=int, default=5, help='training frequency')
 
     parser.add_argument('--gamma', type=float, default=0.99, help='Discounted Factor')
     parser.add_argument('--net_width', type=int, default=200, help='Hidden net width')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--batch_size', type=int, default=256, help='lenth of sliced trajectory')
-    parser.add_argument('--exp_noise', type=float, default=0.2, help='explore noise')
-    parser.add_argument('--noise_decay', type=float, default=0.99, help='decay rate of explore noise')
     parser.add_argument('--Double', type=str2bool, default=True, help='Whether to use Double Q-learning')
     parser.add_argument('--Duel', type=str2bool, default=True, help='Whether to use Duel networks')
 
@@ -276,13 +310,18 @@ if __name__ == '__main__':
     opt.dvc = torch.device(opt.dvc)
     # env: real pc in active directory
     opt.state_dim = 768
-    opt.action_dim = 16
+    opt.action_dim = 2
 
     #Algorithm Setting
     if opt.Duel: algo_name = 'Duel'
     else: algo_name = ''
     if opt.Double: algo_name += 'DDQN'
     else: algo_name += 'DQN'
+
+    print(f"state_dim: {opt.state_dim}")
+    print(f"action_dim: {opt.action_dim}")
+    print(f"algo_name: {algo_name}")
+    print(f"algo_name: {algo_name}")
 
     adenv: ad_env = ad_env()
     agent = DQN_agent(**vars(opt))
@@ -293,10 +332,11 @@ if __name__ == '__main__':
         from torch.utils.tensorboard import SummaryWriter
         timenow = str(datetime.now())[0:-10]
         timenow = ' ' + timenow[0:13] + '_' + timenow[-2::]
-        writepath = 'runs/{}_S{}_'.format(algo_name,opt.seed) + timenow
+        writepath = 'runs/{}_S_'.format(algo_name) + timenow
         if os.path.exists(writepath): shutil.rmtree(writepath)
         writer = SummaryWriter(log_dir=writepath)
 
+    print("======Reading MITRE ATT&CK=====")
     ## 整理 MITRE ATT&CK 
     mitre_attack_data = MitreAttackData("./json/enterprise-attack.json")
     techniques = mitre_attack_data.get_techniques(remove_revoked_deprecated=True)
@@ -313,4 +353,5 @@ if __name__ == '__main__':
 
     cudnn.benchmark = True
 
-    app.run(host='0.0.0.0', port=9200)
+    print("======Start Engage=====")
+    app.run(host=app.config['host'], port=app.config['port'], debug=app.config['debug'])

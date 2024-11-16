@@ -92,6 +92,7 @@ class DQN_agent(object):
 		# Update the frozen target models
 		for param, target_param in zip(self.q_net.parameters(), self.q_target.parameters()):
 			target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+		return q_loss
 
 
 	def save(self,algo,EnvName,steps):
