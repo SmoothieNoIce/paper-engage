@@ -116,6 +116,7 @@ def preprocess_command(id, sid, command):
         ttp_label_int = get_technique_as_int(ttp['techniques'][0]['technique_id'])
 
     return {
+        'cmd': command,   
         'is_script': is_script,
         'commandvec': commandvec,
         'ttp_label_int': ttp_label_int,
@@ -130,6 +131,7 @@ class ad_env:
         self.all_technique = []
         self.is_cleaning = False
 
+        self.command_data_before = None
         self.command_before = ""
         self.technique_int_before = -1
         self.ttp_before = None
@@ -146,24 +148,23 @@ class ad_env:
         #r2 = requests.post(f"{app.config['engage_network']}/post", data = my_data)
         pass
     
-    def get_reward(self, ttp_before, a_before):
+    def get_reward(self, command_data, ttp_before, a_before):
         current_reward = 0
         
         # Reward: MITRE Engage
         for action in predefined_actions:
             # 先檢查 action 與 predefined_actions 的對應
             if action['id'] == a_before:
-                if action['id'] in list(attack_mapping_simple.keys()):
-                    # 檢查每個 action 的 TTP
-                    engages_activity = attack_mapping_simple[action['id']]
-                    for ttp in ttp_before['techniques']:
-                        if ttp['id'] in list(attack_mapping_simple.keys()):
-                            ttp_activity = attack_mapping_simple[ttp['id']]
-                            intersection = engages_activity.intersection(ttp_activity)
-                            if len(intersection) > 0:
-                                current_reward += 10
-                            else:
-                                current_reward -= 5
+                # 檢查每個 action 的 TTP
+                engages_activity = action['activities']
+                for ttp in ttp_before['techniques']:
+                    if ttp['id'] in list(attack_mapping_simple.keys()):
+                        ttp_activity = attack_mapping_simple[ttp['id']]
+                        intersection = engages_activity.intersection(ttp_activity)
+                        if len(intersection) > 0:
+                            current_reward += 10
+                        else:
+                            current_reward -= 5
 
         # Reward: MITRE ATT&CK
         for ttp in ttp_before['techniques']:
@@ -173,6 +174,24 @@ class ad_env:
                 current_reward += 5
 
             self.all_technique.append(ttp['technique_id'])
+
+        if "cd" in command_data['cmd'] or "Set-Location" in command_data['cmd']:
+            current_reward += 5
+
+        if "Invoke-Mimikatz" in command_data['cmd']:
+            current_reward += 5
+
+        if "IEX" in command_data['cmd'] or "Invoke-Expression" in command_data['cmd']:
+            current_reward += 5
+
+        if "IWR" in command_data['cmd'] or "Invoke-WebRequest" in command_data['cmd']:
+            current_reward += 5
+
+        if "Get-ACL" in command_data['cmd']:
+            current_reward += 5
+        
+        if "Get-Service" in command_data['cmd']:
+            current_reward += 5
         
         technique_set = set(self.all_technique)
         writer.add_scalar('techniques', len(technique_set), global_step=adenv.total_steps)
@@ -225,7 +244,7 @@ def next_step():
                 '''Todo: 比較上一個指令 technique 和上一個 action 的 activity 對應到的 technique 是否有重疊，'''
                 '''還有目前環境的狀態，計算 reward'''
 
-                r_before = adenv.get_reward(adenv.ttp_before, adenv.a_before)
+                r_before = adenv.get_reward(adenv.command_data_before, adenv.ttp_before, adenv.a_before)
                 writer.add_scalar('action', adenv.a_before, global_step=adenv.total_steps)
                 writer.add_scalar('reward', r_before, global_step=adenv.total_steps)
 
@@ -236,6 +255,7 @@ def next_step():
                 adenv.execute_action(a_next, sid)
 
             '''Update AD Env，Next Step'''
+            adenv.command_data_before = command_data
             adenv.technique_int_before = command_data['ttp_label_int']
             adenv.ttp_before = command_data['ttp']
 
