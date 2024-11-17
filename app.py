@@ -158,9 +158,9 @@ class ad_env:
                 # 檢查每個 action 的 TTP
                 engages_activity = action['activities']
                 for ttp in ttp_before['techniques']:
-                    if ttp['id'] in list(attack_mapping_simple.keys()):
-                        ttp_activity = attack_mapping_simple[ttp['id']]
-                        intersection = engages_activity.intersection(ttp_activity)
+                    if ttp['technique_id'] in list(attack_mapping_simple.keys()):
+                        ttp_activity = attack_mapping_simple[ttp['technique_id']]
+                        intersection = list(set(engages_activity) & set(ttp_activity))
                         if len(intersection) > 0:
                             current_reward += 10
                         else:
