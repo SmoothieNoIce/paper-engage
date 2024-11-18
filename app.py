@@ -169,7 +169,7 @@ class ad_env:
         # Reward: MITRE ATT&CK
         for ttp in ttp_before['techniques']:
             if ttp['technique_id'] in self.all_technique:
-                current_reward -= 10
+                current_reward -= 20
             else:
                 current_reward += 5
 
@@ -181,8 +181,9 @@ class ad_env:
         if "Invoke-Mimikatz" in command_data['cmd']:
             current_reward += 5
 
-        if "IEX" in command_data['cmd'] or "Invoke-Expression" in command_data['cmd']:
-            current_reward += 5
+        #if "IEX" in command_data['cmd'] or "Invoke-Expression" in command_data['cmd']:
+            #current_reward += 5
+            # Meterpreter 有些普通的指令也會有 IEX，所以這裡不加分
 
         if "IWR" in command_data['cmd'] or "Invoke-WebRequest" in command_data['cmd']:
             current_reward += 5
@@ -293,7 +294,7 @@ def next_step():
                 print(f"Error occurred while printing: {e}")
 
             '''HTTP Response'''
-            return jsonify({"message": "PS command received successfully!", "command": command, "result": 1 }), 200
+            return jsonify({"message": "PS command received successfully!", "command": command, "result": a_next }), 200
         else:
             dw = 1
             s_next = get_vector_by_command("exit")
@@ -351,7 +352,7 @@ if __name__ == '__main__':
     opt.dvc = torch.device(opt.dvc)
     # env: real pc in active directory
     opt.state_dim = 768
-    opt.action_dim = 2
+    opt.action_dim = 8
 
     #Algorithm Setting
     if opt.Duel: algo_name = 'Duel'
