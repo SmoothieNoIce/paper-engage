@@ -45,14 +45,14 @@ predefined_actions = [
     },
     {
         "id": 6,
-        "name": "reject command/(Pfsense)reject L4 kerboros(tcp 445) ticket(between 192.168.10.10 and 192.168.10.30)",
+        "name": "reject command/(Pfsense)reject L4 389 ticket(between 192.168.10.10 and 192.168.10.30)",
         "activities": [
             "EAC0016"
         ],
     },
     {
         "id": 7,
-        "name": "accept command/(Pfsense)reject L4 kerboros ticket(between 192.168.10.10 and 192.168.10.30)",
+        "name": "accept command/(Pfsense)reject L4 389 kerboros ticket(between 192.168.10.10 and 192.168.10.30)",
         "activities": [
             "EAC0016"
         ],

@@ -18,6 +18,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import LabelEncoder
 from transformers import BertTokenizer, BertModel
+from concurrent.futures import ThreadPoolExecutor
 
 from DDQN import DQN_agent
 from utils import evaluate_policy, str2bool
@@ -38,6 +39,11 @@ model = BertModel.from_pretrained('bert-base-uncased')
 
 agent: DQN_agent = None
 attack_mapping_simple = None
+
+demo_activity = [0,1,2,3,4,5,6,7]
+demo_activity_idx = 0
+
+executor = ThreadPoolExecutor(max_workers=5)
 
 def get_ttp_by_command(command):
     
@@ -104,12 +110,16 @@ def detect_powershell_content(content):
     else:
         return False
 
-def preprocess_command(id, sid, command):
+def preprocess_command(id, sid, command):        
     is_script = detect_powershell_content(command)
     commandvec = get_vector_by_command(command)
-    ttp = get_ttp_by_command(command)
-    ttp_label_int = None
+
+    if opt.no_internet_mode == True:
+        ttp = None
+    else:
+        ttp = get_ttp_by_command(command)
     
+    ttp_label_int = None
     if ttp == None or len(ttp['techniques']) == 0:
         ttp_label_int = get_technique_as_int('TNotFound')
     else:
@@ -142,38 +152,43 @@ class ad_env:
         self.id_list = [] # 用於存儲每個指令的 ID(時間戳)
         pass
 
-    def execute_action(self, state, sid):
-        my_data = {'sid': sid, "action": 1}
-        #r1 = requests.get(f"{app.config['engage_ad']}", data = my_data)
-        #r2 = requests.post(f"{app.config['engage_network']}/post", data = my_data)
+    def execute_action(self, action, sid):
+        my_data = {'sid': sid, "action": action}
+        if action in [2,3]:
+            r1 = requests.get(f"{app.config['engage_ad']}", params = my_data)
+            print(f"message: security control {action} executed")
+        if action in [4,5,6,7]:
+            r2 = requests.get(f"{app.config['engage_network']}", params = my_data)
+            print(f"message: network manipulation {action} executed")
         pass
     
     def get_reward(self, command_data, ttp_before, a_before):
         current_reward = 0
         
-        # Reward: MITRE Engage
-        for action in predefined_actions:
-            # 先檢查 action 與 predefined_actions 的對應
-            if action['id'] == a_before:
-                # 檢查每個 action 的 TTP
-                engages_activity = action['activities']
-                for ttp in ttp_before['techniques']:
-                    if ttp['technique_id'] in list(attack_mapping_simple.keys()):
-                        ttp_activity = attack_mapping_simple[ttp['technique_id']]
-                        intersection = list(set(engages_activity) & set(ttp_activity))
-                        if len(intersection) > 0:
-                            current_reward += 10
-                        else:
-                            current_reward -= 5
+        if opt.no_internet_mode == False:
+            # Reward: MITRE Engage
+            for action in predefined_actions:
+                # 先檢查 action 與 predefined_actions 的對應
+                if action['id'] == a_before:
+                    # 檢查每個 action 的 TTP
+                    engages_activity = action['activities']
+                    for ttp in ttp_before['techniques']:
+                        if ttp['technique_id'] in list(attack_mapping_simple.keys()):
+                            ttp_activity = attack_mapping_simple[ttp['technique_id']]
+                            intersection = list(set(engages_activity) & set(ttp_activity))
+                            if len(intersection) > 0:
+                                current_reward += 10
+                            else:
+                                current_reward -= 5
 
-        # Reward: MITRE ATT&CK
-        for ttp in ttp_before['techniques']:
-            if ttp['technique_id'] in self.all_technique:
-                current_reward -= 20
-            else:
-                current_reward += 5
+            # Reward: MITRE ATT&CK
+            for ttp in ttp_before['techniques']:
+                if ttp['technique_id'] in self.all_technique:
+                    current_reward -= 20
+                else:
+                    current_reward += 5
 
-            self.all_technique.append(ttp['technique_id'])
+                self.all_technique.append(ttp['technique_id'])
 
         if "cd" in command_data['cmd'] or "Set-Location" in command_data['cmd']:
             current_reward += 5
@@ -207,6 +222,8 @@ def next_step():
     global adenv
     global writer
     global agent
+    global demo_activity
+    global demo_activity_idx
 
     if request.is_json:
         data = request.get_json()
@@ -237,8 +254,15 @@ def next_step():
             s_next: torch.Tensor = command_data['commandvec']
             if adenv.isFirstCommand:
                 '''對當前的指令選擇 action'''
-                a_next = agent.select_action(s_next, deterministic=False)
-                adenv.execute_action(a_next, sid)
+                if opt.demo == True:
+                    a_next = demo_activity[demo_activity_idx]
+                    demo_activity_idx += 1
+                    if demo_activity_idx >= len(demo_activity):
+                        demo_activity_idx = 0
+                else:
+                    a_next = agent.select_action(s_next, deterministic=False)
+                #adenv.execute_action(a_next, sid)
+                executor.submit(adenv.execute_action, a_next, sid)
                 adenv.isFirstCommand = False
             else:
                 '''分析上一個指令 reward'''
@@ -252,8 +276,15 @@ def next_step():
                 '''計算上一個指令的 reward，然後進行學習'''
                 agent.replay_buffer.add(adenv.s_before.detach().numpy(), adenv.a_before, r_before, s_next.detach().numpy(), dw)
                 '''對當前的指令選擇 action'''
-                a_next = agent.select_action(s_next, deterministic=False)
-                adenv.execute_action(a_next, sid)
+                if opt.demo == True:
+                    a_next = demo_activity[demo_activity_idx]
+                    demo_activity_idx += 1
+                    if demo_activity_idx >= len(demo_activity):
+                        demo_activity_idx = 0
+                else:
+                    a_next = agent.select_action(s_next, deterministic=False)
+                #adenv.execute_action(a_next, sid)
+                executor.submit(adenv.execute_action, a_next, sid)
 
             '''Update AD Env，Next Step'''
             adenv.command_data_before = command_data
@@ -288,8 +319,9 @@ def next_step():
                 # 檢查 command 並轉換非 ASCII 字符
                 safe_command = command.encode('ascii', errors='replace').decode('ascii')
                 print(f"message: PS command received successfully!, command:{safe_command}, result: {a_next}")
-                for technique in command_data['ttp']['techniques']:
-                    print(f"message: technique: {technique['technique_id']} - {technique['name']}")
+                if opt.no_internet_mode == False:
+                    for technique in command_data['ttp']['techniques']:
+                        print(f"message: technique: {technique['technique_id']} - {technique['name']}")
             except Exception as e:
                 print(f"Error occurred while printing: {e}")
 
@@ -298,7 +330,7 @@ def next_step():
         else:
             dw = 1
             s_next = get_vector_by_command("exit")
-            r_before = adenv.get_reward(adenv.ttp_before, adenv.a_before)
+            r_before = adenv.get_reward(adenv.command_data_before, adenv.ttp_before, adenv.a_before)
             if len(adenv.s_before) != 0:
                 agent.replay_buffer.add(adenv.s_before.detach().numpy(), adenv.a_before, r_before, s_next.detach().numpy(), dw)
             print(f"message: exit!")
@@ -347,6 +379,8 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=256, help='lenth of sliced trajectory')
     parser.add_argument('--Double', type=str2bool, default=True, help='Whether to use Double Q-learning')
     parser.add_argument('--Duel', type=str2bool, default=True, help='Whether to use Duel networks')
+    parser.add_argument('--demo', type=str2bool, default=True, help='Whether to use Duel networks')
+    parser.add_argument('--no_internet_mode', type=str2bool, default=True, help='Whether to use Duel networks')
 
     opt = parser.parse_args()
     opt.dvc = torch.device(opt.dvc)
