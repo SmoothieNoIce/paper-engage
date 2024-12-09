@@ -1,3 +1,4 @@
+import base64
 from datetime import datetime
 import os
 import shutil
@@ -109,8 +110,28 @@ def detect_powershell_content(content):
         return True
     else:
         return False
+    
+def decode_command(input_string):
+    base64_pattern = r'FromBase64String\("([^"]+)"\)'
+    match = re.search(base64_pattern, input_string)
 
-def preprocess_command(id, sid, command):        
+    if match:
+        base64_string = match.group(1)  # 提取 Base64 字串
+        try:
+            # 解碼 Base64 字串
+            decoded_string = base64.b64decode(base64_string).decode('utf-8')
+            print("Decoded String:", decoded_string)
+            return decoded_string
+        except Exception as e:
+            print("Error decoding Base64:", e)
+            return None
+    else:
+        return None
+
+def preprocess_command(id, sid, command):
+    decoded_command = decode_command(command)
+    if decoded_command != None:
+        command = decoded_command
     is_script = detect_powershell_content(command)
     commandvec = get_vector_by_command(command)
 
@@ -125,12 +146,27 @@ def preprocess_command(id, sid, command):
     else:
         ttp_label_int = get_technique_as_int(ttp['techniques'][0]['technique_id'])
 
+    is_msf = False
+    pattern = r'IEX\s+\(\[System\.Text\.Encoding\]::UTF8\.GetString\(\[System\.Convert\]::FromBase64String\(".*?"\)\)\)'
+    matches = re.findall(pattern, command)
+    if matches:
+        is_msf = True
+    else:
+        is_msf = False
+
+    is_atomic = False
+    if "Invoke-AtomicTest" in command:
+        is_atomic = True
+
     return {
         'cmd': command,   
+        'is_decoded': decoded_command != None,
         'is_script': is_script,
         'commandvec': commandvec,
         'ttp_label_int': ttp_label_int,
-        'ttp': ttp
+        'ttp': ttp,
+        'is_msf': is_msf,
+        'is_atomic': is_atomic,
     }
 
 class ad_env:
@@ -167,19 +203,20 @@ class ad_env:
         
         if opt.no_internet_mode == False:
             # Reward: MITRE Engage
-            for action in predefined_actions:
-                # 先檢查 action 與 predefined_actions 的對應
-                if action['id'] == a_before:
-                    # 檢查每個 action 的 TTP
-                    engages_activity = action['activities']
-                    for ttp in ttp_before['techniques']:
-                        if ttp['technique_id'] in list(attack_mapping_simple.keys()):
-                            ttp_activity = attack_mapping_simple[ttp['technique_id']]
-                            intersection = list(set(engages_activity) & set(ttp_activity))
-                            if len(intersection) > 0:
-                                current_reward += 10
-                            else:
-                                current_reward -= 5
+            if opt.mitre_engage == True:
+                for action in predefined_actions:
+                    # 先檢查 action 與 predefined_actions 的對應
+                    if action['id'] == a_before:
+                        # 檢查每個 action 的 TTP
+                        engages_activity = action['activities']
+                        for ttp in ttp_before['techniques']:
+                            if ttp['technique_id'] in list(attack_mapping_simple.keys()):
+                                ttp_activity = attack_mapping_simple[ttp['technique_id']]
+                                intersection = list(set(engages_activity) & set(ttp_activity))
+                                if len(intersection) > 0:
+                                    current_reward += 10
+                                else:
+                                    current_reward -= 5
 
             # Reward: MITRE ATT&CK
             for ttp in ttp_before['techniques']:
@@ -190,11 +227,11 @@ class ad_env:
 
                 self.all_technique.append(ttp['technique_id'])
 
-        if "cd" in command_data['cmd'] or "Set-Location" in command_data['cmd']:
+        if "Set-Location" in command_data['cmd']:
             current_reward += 5
 
         if "Invoke-Mimikatz" in command_data['cmd']:
-            current_reward += 5
+            current_reward += 10
 
         #if "IEX" in command_data['cmd'] or "Invoke-Expression" in command_data['cmd']:
             #current_reward += 5
@@ -208,6 +245,10 @@ class ad_env:
         
         if "Get-Service" in command_data['cmd']:
             current_reward += 5
+
+        if "Start-Process" in command_data['cmd']:
+            current_reward += 5
+            
         
         technique_set = set(self.all_technique)
         writer.add_scalar('techniques', len(technique_set), global_step=adenv.total_steps)
@@ -245,6 +286,14 @@ def next_step():
 
             '''分析目前 command 的 TTP，並儲存作為計算 Reward'''
             command_data = preprocess_command(id, sid, command)
+            
+            if command_data['is_msf'] == True:
+                print(f"message: Metasploit command detected!")
+                return jsonify({"message": "Metasploit command detected!", "command": command, "result": 1 }), 200
+            
+            if command_data['is_atomic'] == True:
+                print(f"message: Atomic Red Team command detected!")
+                return jsonify({"message": "Atomic Red Team command detected!", "command": command, "result": 1 }), 200
 
             '''分析上個指令是否離開 Shell (die or win)'''
             '''TOdo: 改為分析上個指令是否離開 RDP (die or win)'''
@@ -270,6 +319,7 @@ def next_step():
                 '''還有目前環境的狀態，計算 reward'''
 
                 r_before = adenv.get_reward(adenv.command_data_before, adenv.ttp_before, adenv.a_before)
+                print(f"reward: {r_before}")
                 writer.add_scalar('action', adenv.a_before, global_step=adenv.total_steps)
                 writer.add_scalar('reward', r_before, global_step=adenv.total_steps)
 
@@ -290,8 +340,6 @@ def next_step():
             adenv.command_data_before = command_data
             adenv.technique_int_before = command_data['ttp_label_int']
             adenv.ttp_before = command_data['ttp']
-
-            '''Rest API'''
 
             '''儲存 State 作為計算 reward'''
             adenv.s_before = s_next
@@ -325,8 +373,9 @@ def next_step():
             except Exception as e:
                 print(f"Error occurred while printing: {e}")
 
+            print(f"------------------------------------")
             '''HTTP Response'''
-            return jsonify({"message": "PS command received successfully!", "command": command, "result": a_next }), 200
+            return jsonify({"message": "PS command received successfully!", "command": command, "result": a_next}), 200
         else:
             dw = 1
             s_next = get_vector_by_command("exit")
@@ -334,6 +383,7 @@ def next_step():
             if len(adenv.s_before) != 0:
                 agent.replay_buffer.add(adenv.s_before.detach().numpy(), adenv.a_before, r_before, s_next.detach().numpy(), dw)
             print(f"message: exit!")
+            print(f"------------------------------------")
             return jsonify({"message": "exit successfully!"}), 200
 
 # Paper-Attack 環境清理
@@ -368,6 +418,7 @@ if __name__ == '__main__':
     parser.add_argument('--dvc', type=str, default='cuda:0', help='running device: cuda or cpu')
     parser.add_argument('--write', type=str2bool, default=True, help='Use SummaryWriter to record the training')
     parser.add_argument('--IsTrain', type=str2bool, default=True, help='Is Train or Not')
+    parser.add_argument('--mitre_engage', type=str2bool, default=False, help='mitre_engage')
 
     parser.add_argument('--save_interval', type=int, default=int(50), help='Model saving interval, in steps.')
     parser.add_argument('--update_every', type=int, default=5, help='training frequency')
@@ -380,7 +431,7 @@ if __name__ == '__main__':
     parser.add_argument('--Double', type=str2bool, default=True, help='Whether to use Double Q-learning')
     parser.add_argument('--Duel', type=str2bool, default=True, help='Whether to use Duel networks')
     parser.add_argument('--demo', type=str2bool, default=True, help='Whether to use Duel networks')
-    parser.add_argument('--no_internet_mode', type=str2bool, default=True, help='Whether to use Duel networks')
+    parser.add_argument('--no_internet_mode', type=str2bool, default=False, help='Whether to use Duel networks')
 
     opt = parser.parse_args()
     opt.dvc = torch.device(opt.dvc)
@@ -406,8 +457,12 @@ if __name__ == '__main__':
     if opt.write:
         from torch.utils.tensorboard import SummaryWriter
         timenow = str(datetime.now())[0:-10]
-        timenow = ' ' + timenow[0:13] + '_' + timenow[-2::]
-        writepath = 'runs/{}_S_'.format(algo_name) + timenow
+        timenow = timenow[0:10] + '_' + timenow[-5::]
+        if opt.mitre_engage == True:
+            mitre = 'mitre'
+        else:
+            mitre = 'nomitre'
+        writepath = f'runs/{algo_name}_{mitre}_S_{timenow}'
         if os.path.exists(writepath): shutil.rmtree(writepath)
         writer = SummaryWriter(log_dir=writepath)
         print(f"writepath: {writepath}")

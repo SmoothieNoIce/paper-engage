@@ -1,0 +1,15 @@
+{
+    "commands": [
+        "powershell.exe",
+        "cmd.exe",
+        "Invoke-Expression",
+        "Invoke-Mimikatz",
+        "wget",
+        "curl",
+        "Set-MaliciousPayload",
+        "nc.exe",
+        "meterpreter",
+        "mshta.exe",
+        "regsvr32.exe"
+    ]
+}

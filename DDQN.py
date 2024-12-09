@@ -64,6 +64,9 @@ class DQN_agent(object):
 				if np.random.rand() < self.exp_noise:
 					a = np.random.randint(0,self.action_dim)
 				else:
+					q_values = self.q_net(state)
+					print(f"q_values:{q_values}")
+					print(f"argmax:{self.q_net(state).argmax()}")
 					a = self.q_net(state).argmax().item()
 		return a
 
